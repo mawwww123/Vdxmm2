@@ -1,0 +1,60 @@
+local SoundService = game:GetService("SoundService")
+
+-- Function
+local function playSound(soundId)
+    local sound = Instance.new("Sound")
+    sound.SoundId = soundId
+    sound.Volume = 1
+    sound.Looped = false
+    sound.Parent = SoundService
+
+    sound:Play()
+
+    sound.Ended:Connect(function()
+        sound:Destroy()
+    end)
+end
+
+local games = {
+    [142823291] = "https://raw.githubusercontent.com/mawwww123/Vdxmm2/refs/heads/main/mm2mawww.txt",
+    [93978595733734] = "https://raw.githubusercontent.com/mawwww123/Vdxmm2/refs/heads/main/vdmawwwwwupdate1_obfuscated.lua.txt",
+}
+
+local currentPlaceID = game.PlaceId
+local currentUniverseID = game.GameId
+local scriptURL = games[currentUniverseID] or games[currentPlaceID]
+
+if scriptURL then
+    -- Support
+    playSound("rbxassetid://138118203571469")
+
+    print(
+        "Mawww hub: Loading script for " ..
+        (games[currentUniverseID] and "Universe ID" or "Place ID") ..
+        " " ..
+        tostring(games[currentUniverseID] and currentUniverseID or currentPlaceID)
+    )
+
+    loadstring(game:HttpGet(scriptURL))()
+else
+    -- Not Support
+    playSound("rbxassetid://130988530651697")
+
+    local msg =
+        "This map is not supported yet!\n" ..
+        "Place ID: " .. tostring(currentPlaceID) .. "\n" ..
+        "Universe ID: " .. tostring(currentUniverseID)
+
+    local StarterGui = game:GetService("StarterGui")
+
+    pcall(function()
+        StarterGui:SetCore("SendNotification", {
+            Title = "Mawww hub",
+            Text = msg,
+            Icon = "rbxassetid://95802749943553",
+            Duration = 3
+        })
+    end)
+
+    warn(msg)
+end
