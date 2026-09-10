@@ -1,0 +1,1636 @@
+--[[
+    YARHM MM2 Module for ModernV2 (KysHubNewUI)
+    - Full YARHM MM2 feature preservation
+    - Animated Floating Buttons for quick access
+    - Drag/Lock mode support
+    - Lumi Blue theme matching VD layout
+--]]
+
+-- ============================================================
+-- SERVICES
+-- ============================================================
+local Players           = game:GetService("Players")
+local RunService        = game:GetService("RunService")
+local TweenService      = game:GetService("TweenService")
+local UserInputService  = game:GetService("UserInputService")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local TextChatService   = game:GetService("TextChatService")
+local CoreGui           = game:GetService("CoreGui")
+local localplayer       = Players.LocalPlayer
+
+-- ============================================================
+-- LOAD MODERNV2
+-- ============================================================
+local repo = 'https://raw.githubusercontent.com/Kys-lol/KysHubNewUI/refs/heads/main/'
+local ModernV2 = loadstring(game:HttpGet(repo .. 'MainV2.lua'))()
+
+-- ============================================================
+-- STATE
+-- ============================================================
+local playerESP         = false
+local autoShooting      = false
+local shootOffset       = 2.8
+local offsetToPingMult  = 1
+local gunDropESP        = false
+local trapDetection     = false
+local autoGetDroppedGun = false
+local instakillshoot    = false
+local spawnAtPlayer     = false
+local loopThrow         = false
+local hideMeEsp         = false
+local killAuraCon       = nil
+local playerData        = {}
+
+-- ============================================================
+-- ESP CONTAINER
+-- ============================================================
+local ESPContainer = { Indicators = {} }
+
+function ESPContainer:Add(target, options)
+    if not target then return end
+    local highlight = Instance.new("Highlight")
+    highlight.Name = "ESP_" .. tostring(math.random(100000, 999999))
+    highlight.Adornee = target
+    highlight.FillTransparency = 0.7
+    highlight.FillColor = options.AccentColor or Color3.new(1, 1, 0)
+    highlight.OutlineColor = options.AccentColor or Color3.new(1, 1, 0)
+    highlight.OutlineTransparency = 0
+    highlight.DepthMode = Enum.HighlightDepthMode.AlwaysOnTop
+    highlight.Parent = CoreGui
+
+    local label = nil
+    if options.ShowLabel then
+        label = Instance.new("BillboardGui")
+        label.Name = "Label_" .. tostring(math.random(100000, 999999))
+        label.AlwaysOnTop = true
+        label.MaxDistance = 99999
+        label.Size = UDim2.new(0, 70, 0, 70)
+        label.StudsOffset = Vector3.new(0, 2, 0)
+        label.Adornee = target
+        label.Parent = CoreGui
+
+        local textLabel = Instance.new("TextLabel")
+        textLabel.Size = UDim2.new(1, 0, 1, 0)
+        textLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+        textLabel.Position = UDim2.new(0.5, 0, 0.5, 0)
+        textLabel.BackgroundTransparency = 1
+        textLabel.Font = Enum.Font.SourceSansBold
+        textLabel.TextScaled = true
+        textLabel.TextWrapped = true
+        textLabel.TextColor3 = options.AccentColor or Color3.new(1, 1, 0)
+        textLabel.Text = options.LabelText or "Target"
+        textLabel.Parent = label
+        Instance.new("UIStroke", textLabel)
+    end
+
+    self.Indicators[target] = { Highlight = highlight, Label = label, Options = options }
+end
+
+function ESPContainer:Remove(target)
+    local data = self.Indicators[target]
+    if not data then return end
+    if data.Highlight then data.Highlight:Destroy() end
+    if data.Label then data.Label:Destroy() end
+    self.Indicators[target] = nil
+end
+
+function ESPContainer:RemoveGroup(groupName)
+    for target, data in pairs(self.Indicators) do
+        if data.Options.GroupName == groupName then
+            self:Remove(target)
+        end
+    end
+end
+
+function ESPContainer:ClearAllGroups()
+    for target, _ in pairs(self.Indicators) do
+        self:Remove(target)
+    end
+end
+
+-- ============================================================
+-- MM2 HELPERS
+-- ============================================================
+local function findMurderer()
+    for _, i in ipairs(Players:GetPlayers()) do
+        if i.Backpack:FindFirstChild("Knife") then return i end
+    end
+    for _, i in ipairs(Players:GetPlayers()) do
+        if i.Character and i.Character:FindFirstChild("Knife") then return i end
+    end
+    if playerData then
+        for player, data in playerData do
+            if data.Role == "Murderer" and Players:FindFirstChild(player) then
+                return Players:FindFirstChild(player)
+            end
+        end
+    end
+    return nil
+end
+
+local function findSheriff()
+    for _, i in ipairs(Players:GetPlayers()) do
+        if i.Backpack:FindFirstChild("Gun") then return i end
+    end
+    for _, i in ipairs(Players:GetPlayers()) do
+        if i.Character and i.Character:FindFirstChild("Gun") then return i end
+    end
+    if playerData then
+        for player, data in playerData do
+            if data.Role == "Sheriff" and Players:FindFirstChild(player) then
+                return Players:FindFirstChild(player)
+            end
+        end
+    end
+    return nil
+end
+
+local function findSheriffThatsNotMe()
+    for _, i in ipairs(Players:GetPlayers()) do
+        if i == localplayer then continue end
+        if i.Backpack:FindFirstChild("Gun") then return i end
+    end
+    for _, i in ipairs(Players:GetPlayers()) do
+        if i == localplayer then continue end
+        if i.Character and i.Character:FindFirstChild("Gun") then return i end
+    end
+    if playerData then
+        for player, data in playerData do
+            if data.Role == "Sheriff" and Players:FindFirstChild(player) then
+                local p = Players:FindFirstChild(player)
+                if p ~= localplayer then return p end
+            end
+        end
+    end
+    return nil
+end
+
+local function findNearestPlayer()
+    local nearestPlayer, shortestDistance = nil, math.huge
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player ~= localplayer and player.Character then
+            local localRoot = localplayer.Character and localplayer.Character:FindFirstChild("HumanoidRootPart")
+            local otherRoot = player.Character:FindFirstChild("HumanoidRootPart")
+            if localRoot and otherRoot then
+                local distance = (localRoot.Position - otherRoot.Position).Magnitude
+                if distance < shortestDistance then
+                    shortestDistance = distance
+                    nearestPlayer = player
+                end
+            end
+        end
+    end
+    return nearestPlayer
+end
+
+local function getMap()
+    for _, o in ipairs(workspace:GetChildren()) do
+        if o:FindFirstChild("CoinContainer") and o:FindFirstChild("Spawns") then
+            return o
+        end
+    end
+    return nil
+end
+
+local function getPredictedPosition(player, offset)
+    if not player.Character then return Vector3.new(0,0,0) end
+    local hrp = player.Character:FindFirstChild("UpperTorso") or player.Character:FindFirstChild("HumanoidRootPart")
+    local hum = player.Character:FindFirstChild("Humanoid")
+    if not hrp or not hum then return Vector3.new(0,0,0) end
+    local velocity = hrp.AssemblyLinearVelocity
+    local moveDir = hum.MoveDirection
+    local predicted = hrp.Position + (velocity * Vector3.new(0.75, 0.5, 0.75)) * (offset / 15) + moveDir * offset
+    predicted = predicted * (((localplayer:GetNetworkPing() * 1000) * ((offsetToPingMult - 1) * 0.01)) + 1)
+    return predicted
+end
+
+local function reloadESP()
+    if not playerESP then return end
+    ESPContainer:RemoveGroup("players")
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player == localplayer and hideMeEsp then continue end
+        if player.Character then
+            if player == findMurderer() then
+                ESPContainer:Add(player.Character, {
+                    AccentColor = Color3.new(1, 0, 0.0156863),
+                    ShowLabel = true,
+                    LabelText = "Murderer",
+                    GroupName = "players"
+                })
+            elseif player == findSheriff() then
+                ESPContainer:Add(player.Character, {
+                    AccentColor = Color3.new(0, 0.6, 1),
+                    ShowLabel = false,
+                    GroupName = "players"
+                })
+            else
+                ESPContainer:Add(player.Character, {
+                    AccentColor = Color3.new(0, 1, 0.0313725),
+                    ShowLabel = false,
+                    GroupName = "players"
+                })
+            end
+        end
+    end
+end
+
+-- ============================================================
+-- FLOATING BUTTON SYSTEM (NEW — Unique Shapes + Animated Icons)
+-- ============================================================
+local FloatingButtons = {
+    Buttons = {},
+    GlobalLocked = false,
+    ScreenGui = nil,
+}
+
+function FloatingButtons:_getGui()
+    if self.ScreenGui and self.ScreenGui.Parent then
+        return self.ScreenGui
+    end
+    local parent
+    if gethui then
+        local ok, hui = pcall(gethui)
+        parent = ok and hui or CoreGui
+    else
+        parent = CoreGui
+    end
+    local sg = Instance.new("ScreenGui")
+    sg.Name = "YARHM_MM2_Floating"
+    sg.ResetOnSpawn = false
+    sg.IgnoreGuiInset = true
+    sg.DisplayOrder = 999
+    sg.ZIndexBehavior = Enum.ZIndexBehavior.Sibling
+    sg.Parent = parent
+    self.ScreenGui = sg
+    return sg
+end
+
+-- Apply unique shape to a frame
+local function ApplyShape(obj, shape)
+    -- Remove existing corner
+    local existing = obj:FindFirstChildOfClass("UICorner")
+    if existing then existing:Destroy() end
+
+    local corner = Instance.new("UICorner")
+
+    if shape == "circle" then
+        corner.CornerRadius = UDim.new(1, 0)
+    elseif shape == "diamond" then
+        corner.CornerRadius = UDim.new(0, 8)
+        obj.Rotation = 45
+    elseif shape == "rounded" then
+        corner.CornerRadius = UDim.new(0, 14)
+    elseif shape == "hex" then
+        -- Approximate hexagon with rounded corners
+        corner.CornerRadius = UDim.new(0, 22)
+    elseif shape == "squircle" then
+        corner.CornerRadius = UDim.new(0.35, 0)
+    else
+        corner.CornerRadius = UDim.new(1, 0)
+    end
+
+    corner.Parent = obj
+end
+
+function FloatingButtons:Create(config)
+    config = config or {}
+    local name      = config.Name or ("Btn_" .. tostring(math.random(1000, 9999)))
+    local iconName  = config.Icon or "lucide:circle"
+    local shape     = config.Shape or "circle"
+    local size      = config.Size or 52
+    local position  = config.Position or UDim2.new(0, 120, 0.5, 0)
+    local color     = config.Color or Color3.fromRGB(0, 170, 255)
+    local callback  = config.Callback or function() end
+    local onToggle  = config.OnToggle  -- optional: returns current state or nil
+    local isToggle  = config.Toggle or false
+
+    local sg = self:_getGui()
+
+    -- Container (holds button + decorations, allows rotated shapes)
+    local container = Instance.new("Frame")
+    container.Name = "FB_" .. name
+    container.Size = UDim2.fromOffset(size, size)
+    container.Position = position
+    container.AnchorPoint = Vector2.new(0.5, 0.5)
+    container.BackgroundTransparency = 1
+    container.BorderSizePixel = 0
+    container.Parent = sg
+
+    -- Glow ring (rotating dashed effect)
+    local glowRing = Instance.new("ImageLabel")
+    glowRing.Name = "GlowRing"
+    glowRing.Size = UDim2.fromScale(1.35, 1.35)
+    glowRing.Position = UDim2.fromScale(0.5, 0.5)
+    glowRing.AnchorPoint = Vector2.new(0.5, 0.5)
+    glowRing.BackgroundTransparency = 1
+    glowRing.Image = "rbxassetid://1316045217" -- ring texture
+    glowRing.ImageColor3 = color
+    glowRing.ImageTransparency = 0.75
+    glowRing.ZIndex = 1
+    glowRing.Parent = container
+
+    -- Pulse ring (expands and fades)
+    local pulseRing = Instance.new("Frame")
+    pulseRing.Name = "PulseRing"
+    pulseRing.Size = UDim2.fromScale(1, 1)
+    pulseRing.Position = UDim2.fromScale(0.5, 0.5)
+    pulseRing.AnchorPoint = Vector2.new(0.5, 0.5)
+    pulseRing.BackgroundTransparency = 1
+    pulseRing.ZIndex = 2
+    pulseRing.Parent = container
+    local pulseCorner = Instance.new("UICorner")
+    pulseCorner.CornerRadius = UDim.new(1, 0)
+    pulseCorner.Parent = pulseRing
+    local pulseStroke = Instance.new("UIStroke")
+    pulseStroke.Color = color
+    pulseStroke.Thickness = 2
+    pulseStroke.Transparency = 1
+    pulseStroke.Parent = pulseRing
+
+    -- Main button (unique shape)
+    local btn = Instance.new("TextButton")
+    btn.Name = "Button"
+    btn.Size = UDim2.fromScale(1, 1)
+    btn.Position = UDim2.fromScale(0.5, 0.5)
+    btn.AnchorPoint = Vector2.new(0.5, 0.5)
+    btn.Text = ""
+    btn.AutoButtonColor = false
+    btn.BackgroundColor3 = Color3.fromRGB(20, 22, 27)
+    btn.BackgroundTransparency = 0.1
+    btn.BorderSizePixel = 0
+    btn.ZIndex = 5
+    btn.Parent = container
+    ApplyShape(btn, shape)
+
+    -- Reset rotation if diamond (icon stays upright)
+    local innerRotation = (shape == "diamond") and -45 or 0
+
+    -- Stroke
+    local stroke = Instance.new("UIStroke")
+    stroke.Color = color
+    stroke.Thickness = 1.6
+    stroke.Transparency = 0.2
+    stroke.Parent = btn
+
+    -- Inner glow frame (for decoration)
+    local innerGlow = Instance.new("Frame")
+    innerGlow.Name = "InnerGlow"
+    innerGlow.Size = UDim2.fromScale(0.75, 0.75)
+    innerGlow.Position = UDim2.fromScale(0.5, 0.5)
+    innerGlow.AnchorPoint = Vector2.new(0.5, 0.5)
+    innerGlow.BackgroundColor3 = color
+    innerGlow.BackgroundTransparency = 0.88
+    innerGlow.BorderSizePixel = 0
+    innerGlow.ZIndex = 6
+    innerGlow.Parent = btn
+    ApplyShape(innerGlow, shape)
+
+    -- Icon (from ModernV2 library)
+    local icon = Instance.new("ImageLabel")
+    icon.Name = "Icon"
+    icon.Size = UDim2.fromScale(0.55, 0.55)
+    icon.Position = UDim2.fromScale(0.5, 0.5)
+    icon.AnchorPoint = Vector2.new(0.5, 0.5)
+    icon.BackgroundTransparency = 1
+    icon.Rotation = innerRotation
+    icon.ImageColor3 = Color3.fromRGB(255, 255, 255)
+    icon.ZIndex = 7
+    icon.Parent = btn
+
+    -- Use ModernV2 to resolve icon
+    pcall(function()
+        ModernV2:SetIconMode(icon, iconName)
+    end)
+
+    -- Lock indicator (small lock icon top-right)
+    local lockBadge = Instance.new("ImageLabel")
+    lockBadge.Name = "LockBadge"
+    lockBadge.Size = UDim2.fromOffset(16, 16)
+    lockBadge.Position = UDim2.new(1, 2, 0, -2)
+    lockBadge.AnchorPoint = Vector2.new(1, 0)
+    lockBadge.BackgroundColor3 = Color3.fromRGB(15, 17, 22)
+    lockBadge.BorderSizePixel = 0
+    lockBadge.ImageTransparency = 1
+    lockBadge.BackgroundTransparency = 1
+    lockBadge.ZIndex = 10
+    lockBadge.Parent = container
+    local lbCorner = Instance.new("UICorner")
+    lbCorner.CornerRadius = UDim.new(1, 0)
+    lbCorner.Parent = lockBadge
+    pcall(function()
+        ModernV2:SetIconMode(lockBadge, "lucide:lock")
+    end)
+
+    -- Toggle indicator (dot bottom-right)
+    local toggleDot = Instance.new("Frame")
+    toggleDot.Name = "ToggleDot"
+    toggleDot.Size = UDim2.fromOffset(10, 10)
+    toggleDot.Position = UDim2.new(1, -2, 1, -2)
+    toggleDot.AnchorPoint = Vector2.new(1, 1)
+    toggleDot.BackgroundColor3 = Color3.fromRGB(60, 60, 60)
+    toggleDot.BorderSizePixel = 0
+    toggleDot.Visible = isToggle
+    toggleDot.ZIndex = 10
+    toggleDot.Parent = container
+    local tdCorner = Instance.new("UICorner")
+    tdCorner.CornerRadius = UDim.new(1, 0)
+    tdCorner.Parent = toggleDot
+    local tdStroke = Instance.new("UIStroke")
+    tdStroke.Color = Color3.fromRGB(255, 255, 255)
+    tdStroke.Thickness = 1
+    tdStroke.Transparency = 0.5
+    tdStroke.Parent = toggleDot
+
+    -- Button object wrapper
+    local FB = {
+        Name = name,
+        Container = container,
+        Button = btn,
+        Icon = icon,
+        GlowRing = glowRing,
+        PulseRing = pulseRing,
+        PulseStroke = pulseStroke,
+        LockBadge = lockBadge,
+        ToggleDot = toggleDot,
+        Stroke = stroke,
+        BaseColor = color,
+        Shape = shape,
+        Dragging = false,
+        DragStart = nil,
+        StartPos = nil,
+        Dragged = false,
+        Locked = false,
+        ToggleState = false,
+        IsToggle = isToggle,
+        Callback = callback,
+        OnToggle = onToggle,
+        Connection = {},
+    }
+
+    -- =====================
+    -- IDLE ANIMATION (icon pulse + ring rotation)
+    -- =====================
+    local idleTweens = {}
+    local function startIdle()
+        -- Glow ring rotation
+        local ringSpin = TweenService:Create(
+            glowRing,
+            TweenInfo.new(4, Enum.EasingStyle.Linear, Enum.EasingDirection.InOut, -1),
+            { Rotation = 360 }
+        )
+        ringSpin:Play()
+        table.insert(idleTweens, ringSpin)
+
+        -- Icon subtle float (scale up/down)
+        local iconPulse = TweenService:Create(
+            icon,
+            TweenInfo.new(1.4, Enum.EasingStyle.Sine, Enum.EasingDirection.InOut, -1, true),
+            { Size = UDim2.fromScale(0.62, 0.62) }
+        )
+        iconPulse:Play()
+        table.insert(idleTweens, iconPulse)
+
+        -- Pulse ring expanding
+        task.spawn(function()
+            while FB.Container and FB.Container.Parent do
+                pulseRing.Size = UDim2.fromScale(1, 1)
+                pulseStroke.Transparency = 0.4
+                TweenService:Create(
+                    pulseRing,
+                    TweenInfo.new(1.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    { Size = UDim2.fromScale(1.8, 1.8) }
+                ):Play()
+                TweenService:Create(
+                    pulseStroke,
+                    TweenInfo.new(1.8, Enum.EasingStyle.Quad, Enum.EasingDirection.Out),
+                    { Transparency = 1 }
+                ):Play()
+                task.wait(2)
+            end
+        end)
+    end
+    startIdle()
+
+    -- =====================
+    -- HOVER ANIMATION
+    -- =====================
+    local function onHoverEnter()
+        TweenService:Create(btn, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = UDim2.fromScale(1.12, 1.12),
+            BackgroundTransparency = 0,
+        }):Play()
+        TweenService:Create(stroke, TweenInfo.new(0.25), {
+            Transparency = 0,
+            Thickness = 2.4,
+        }):Play()
+        TweenService:Create(icon, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = UDim2.fromScale(0.7, 0.7),
+            Rotation = innerRotation + 8,
+        }):Play()
+    end
+
+    local function onHoverExit()
+        TweenService:Create(btn, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = UDim2.fromScale(1, 1),
+            BackgroundTransparency = 0.1,
+        }):Play()
+        TweenService:Create(stroke, TweenInfo.new(0.25), {
+            Transparency = 0.2,
+            Thickness = 1.6,
+        }):Play()
+        TweenService:Create(icon, TweenInfo.new(0.35, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = UDim2.fromScale(0.55, 0.55),
+            Rotation = innerRotation,
+        }):Play()
+    end
+
+    table.insert(FB.Connection, btn.MouseEnter:Connect(onHoverEnter))
+    table.insert(FB.Connection, btn.MouseLeave:Connect(onHoverExit))
+
+    -- =====================
+    -- PRESS ANIMATION + RIPPLE
+    -- =====================
+    local function onPress()
+        TweenService:Create(btn, TweenInfo.new(0.08), {
+            Size = UDim2.fromScale(0.85, 0.85),
+        }):Play()
+        TweenService:Create(icon, TweenInfo.new(0.25, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Rotation = icon.Rotation + 360,
+        }):Play()
+
+        -- Ripple
+        local ripple = Instance.new("Frame")
+        ripple.Size = UDim2.fromScale(0.2, 0.2)
+        ripple.Position = UDim2.fromScale(0.5, 0.5)
+        ripple.AnchorPoint = Vector2.new(0.5, 0.5)
+        ripple.BackgroundColor3 = color
+        ripple.BackgroundTransparency = 0.4
+        ripple.BorderSizePixel = 0
+        ripple.ZIndex = 4
+        ripple.Parent = btn
+        local rc = Instance.new("UICorner")
+        rc.CornerRadius = UDim.new(1, 0)
+        rc.Parent = ripple
+
+        TweenService:Create(ripple, TweenInfo.new(0.7, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {
+            Size = UDim2.fromScale(2.5, 2.5),
+            BackgroundTransparency = 1,
+        }):Play()
+        task.delay(0.7, function()
+            if ripple.Parent then ripple:Destroy() end
+        end)
+    end
+
+    local function onRelease()
+        TweenService:Create(btn, TweenInfo.new(0.2, Enum.EasingStyle.Back, Enum.EasingDirection.Out), {
+            Size = UDim2.fromScale(1, 1),
+        }):Play()
+    end
+
+    -- =====================
+    -- DRAG SUPPORT (with threshold)
+    -- =====================
+    local DRAG_THRESHOLD = 5
+    local function onInputBegan(input)
+        if input.UserInputType ~= Enum.UserInputType.MouseButton1
+           and input.UserInputType ~= Enum.UserInputType.Touch then return end
+        FB.DragStart = input.Position
+        FB.StartPos = container.Position
+        FB.Dragged = false
+        FB.Dragging = true
+
+        local moveConn, endConn
+        moveConn = UserInputService.InputChanged:Connect(function(mv)
+            if not FB.Dragging then return end
+            if mv.UserInputType ~= Enum.UserInputType.MouseMovement
+               and mv.UserInputType ~= Enum.UserInputType.Touch then return end
+            local delta = mv.Position - FB.DragStart
+            if delta.Magnitude > DRAG_THRESHOLD and not FB.Locked and not FloatingButtons.GlobalLocked then
+                FB.Dragged = true
+                container.Position = UDim2.new(
+                    FB.StartPos.X.Scale, FB.StartPos.X.Offset + delta.X,
+                    FB.StartPos.Y.Scale, FB.StartPos.Y.Offset + delta.Y
+                )
+            end
+        end)
+        endConn = input.Changed:Connect(function()
+            if input.UserInputState == Enum.UserInputState.End then
+                FB.Dragging = false
+                moveConn:Disconnect()
+                endConn:Disconnect()
+            end
+        end)
+    end
+
+    table.insert(FB.Connection, btn.InputBegan:Connect(onInputBegan))
+    table.insert(FB.Connection, btn.MouseButton1Down:Connect(onPress))
+    table.insert(FB.Connection, btn.MouseButton1Up:Connect(onRelease))
+    table.insert(FB.Connection, btn.MouseLeave:Connect(onRelease))
+
+    -- =====================
+    -- CLICK HANDLER
+    -- =====================
+    table.insert(FB.Connection, btn.MouseButton1Click:Connect(function()
+        if FB.Dragged then
+            FB.Dragged = false
+            return
+        end
+
+        if FB.IsToggle then
+            FB.ToggleState = not FB.ToggleState
+            local newColor = FB.ToggleState and Color3.fromRGB(80, 220, 120) or FB.BaseColor
+            TweenService:Create(stroke, TweenInfo.new(0.3), { Color = newColor }):Play()
+            TweenService:Create(glowRing, TweenInfo.new(0.3), { ImageColor3 = newColor }):Play()
+            TweenService:Create(pulseStroke, TweenInfo.new(0.3), { Color = newColor }):Play()
+            TweenService:Create(toggleDot, TweenInfo.new(0.3), {
+                BackgroundColor3 = FB.ToggleState and Color3.fromRGB(80, 220, 120) or Color3.fromRGB(60, 60, 60)
+            }):Play()
+            FB.Callback(FB.ToggleState, FB)
+        else
+            FB.Callback(FB)
+        end
+    end))
+
+    -- =====================
+    -- PUBLIC API
+    -- =====================
+    function FB:SetLocked(state)
+        self.Locked = state
+        lockBadge.ImageTransparency = state and 0 or 1
+        lockBadge.BackgroundTransparency = state and 0.15 or 1
+    end
+
+    function FB:SetToggleState(state)
+        self.ToggleState = state
+        local newColor = state and Color3.fromRGB(80, 220, 120) or self.BaseColor
+        TweenService:Create(stroke, TweenInfo.new(0.3), { Color = newColor }):Play()
+        TweenService:Create(toggleDot, TweenInfo.new(0.3), {
+            BackgroundColor3 = state and Color3.fromRGB(80, 220, 120) or Color3.fromRGB(60, 60, 60)
+        }):Play()
+    end
+
+    function FB:SetVisible(state)
+        container.Visible = state
+    end
+
+    function FB:Destroy()
+        for _, conn in ipairs(self.Connection) do
+            pcall(function() conn:Disconnect() end)
+        end
+        for _, tw in ipairs(idleTweens) do
+            pcall(function() tw:Cancel() end)
+        end
+        container:Destroy()
+    end
+
+    table.insert(self.Buttons, FB)
+    return FB
+end
+
+function FloatingButtons:SetAllLocked(state)
+    self.GlobalLocked = state
+    for _, fb in ipairs(self.Buttons) do
+        fb:SetLocked(state)
+    end
+end
+
+function FloatingButtons:ClearAll()
+    for _, fb in ipairs(self.Buttons) do
+        fb:Destroy()
+    end
+    self.Buttons = {}
+end
+
+-- ============================================================
+-- LUMI BLUE THEME
+-- ============================================================
+pcall(function()
+    ModernV2:AddTheme({
+        Name = "Lumi Blue",
+        Accent = Color3.fromRGB(0, 170, 255),
+        Outline = Color3.fromRGB(0, 170, 255),
+        Text = Color3.fromRGB(255, 255, 255),
+        PlaceholderText = Color3.fromRGB(200, 200, 200)
+    })
+end)
+
+-- ============================================================
+-- MENU ICON
+-- ============================================================
+local MenuIcon
+if ModernV2 and ModernV2.CreateMenuIcon then
+    MenuIcon = ModernV2:CreateMenuIcon({
+        Image = "rbxassetid://95802749943553",
+        Size = 48,
+        IconColor = Color3.fromRGB(255, 255, 255),
+        BGColor = Color3.fromRGB(20, 22, 27),
+        StrokeColor = Color3.fromRGB(0, 170, 255),
+        StrokeThick = 1.5,
+        Draggable = true,
+    })
+end
+
+-- ============================================================
+-- WINDOW
+-- ============================================================
+local Window = ModernV2:CreateWindow({
+    Title = "MawwwHub",
+    Content = "Murder Mystery 2 Module",
+    Image = "95802749943553",
+    Uitransparent = 0.15,
+    Size = UDim2.fromOffset(500, 320),
+    Color = Color3.fromRGB(0, 170, 255),
+    ShowUser = true,
+    Search = true,
+    ConfigEnabled = true,
+    NotifyOnCallbackError = false,
+    Loadingscreen = false,
+    Enable3DRenderer = false,
+    Keybind = "RightControl",
+    Config = {
+        ConfigFolder = "MawwwHubMM2",
+        AutoSaveFile = "MAWWW_MM2",
+        AutoSave = false,
+        AutoLoad = false,
+        Overwrite = true,
+        Format = "JSON",
+        ShowAutoSaveToggle = true,
+        TextGradient = true,
+    }
+})
+
+if MenuIcon and Window.AttachMenuIcon then
+    Window:AttachMenuIcon(MenuIcon)
+end
+
+Window:SetAccount({
+    Username = localplayer.DisplayName,
+    Profile = ModernV2.UserProfile,
+    Expires = "MawwwHubOnTop",
+})
+
+-- ============================================================
+-- NOTIFICATION HELPER
+-- ============================================================
+local function Notify(text, duration)
+    pcall(function()
+        Window:Notify({
+            Title = "MawwwHub MM2",
+            Content = tostring(text),
+            Duration = duration or 3,
+            Icon = "lucide:info",
+        })
+    end)
+end
+
+-- ============================================================
+-- DASHBOARD TAB
+-- ============================================================
+pcall(function()
+    Window:CreateHomeTab({
+        Name = "Dashboard",
+        Icon = "lucide:layout-dashboard",
+        Content = "MawwwHub Murder Mystery 2",
+        DiscordInvite = "https://discord.gg/NMPadyXMa",
+        SupportedExecutors = { "Delta", "Synapse X", "Krnl", "Codex", "Arceus X" },
+        UnsupportedExecutors = { "Roblox Studio" },
+        Segments = {
+            Details = { Text = "Details", Icon = "lucide:grid-2x2" },
+            Script = { Text = "Script Logs", Icon = "lucide:code" },
+            UI = { Text = "UI Logs", Icon = "lucide:file-text", Show = true }
+        },
+        Changelog = {
+            {
+                Title = "MawwwHub MM2 v1.1.0",
+                Description = "Added animated Floating Quick-Access buttons with unique shapes, drag/lock modes, and ModernV2 icon support.",
+            },
+            {
+                Title = "MawwwHub MM2 v1.0.5",
+                Description = "Anti-Fling V2 engine (CanCollide disable). Chat commands: ;af on / ;af off",
+            },
+            {
+                Title = "MawwwHub MM2 v1.0.0",
+                Description = "Initial release: All YARHM MM2 features preserved. Player ESP, Auto Shoot, Kill Aura, and more.",
+            },
+        },
+        UIChangelog = {
+            {
+                Title = "Floating Quick-Access Buttons",
+                Date = "Latest",
+                Description = "Animated buttons with Lucide icons. Multiple shape options (circle, diamond, rounded, hex). Drag OR lock mode.",
+            },
+            {
+                Title = "MawwwHub Frame",
+                Date = "Latest",
+                Description = "Lumi Blue theme, menu icon, 500x320 window, full Dashboard tab.",
+            },
+        }
+    })
+end)
+
+-- ============================================================
+-- TABS
+-- ============================================================
+local Tabs = {
+    ESP         = Window:AddTab({ Name = "ESP", Icon = "lucide:eye" }),
+    Tools       = Window:AddTab({ Name = "Tools", Icon = "lucide:crosshair" }),
+    Detectables = Window:AddTab({ Name = "Detectables", Icon = "lucide:triangle-alert" }),
+    Fun         = Window:AddTab({ Name = "Fun", Icon = "lucide:party-popper" }),
+    Floating    = Window:AddTab({ Name = "Floating", Icon = "lucide:orbit" }),
+    Misc        = Window:AddTab({ Name = "Misc", Icon = "lucide:settings" }),
+}
+
+-- ============================================================
+-- TAB: ESP
+-- ============================================================
+local ESPLeft = Tabs.ESP:AddSection({ Name = "Player ESP", Position = "Left" })
+
+ESPLeft:AddToggle({
+    Name = "Player ESP", Default = false, Flag = "PlayerESP",
+    Callback = function(Value)
+        playerESP = Value
+        if not Value then ESPContainer:RemoveGroup("players")
+        else
+            if not findMurderer() or not findSheriff() then
+                Notify("No roles yet. Waiting...", 3)
+                task.spawn(function()
+                    repeat task.wait(1) until findSheriff() or findMurderer()
+                    reloadESP()
+                end)
+            else reloadESP() end
+        end
+    end
+})
+
+ESPLeft:AddToggle({
+    Name = "Hide My Own ESP", Default = false, Flag = "HideMeESP",
+    Callback = function(Value) hideMeEsp = Value reloadESP() end
+})
+
+ESPLeft:AddButton({
+    Name = "Reload ESP", Icon = "lucide:refresh-cw",
+    Callback = function() reloadESP() Notify("ESP reloaded.", 2) end
+})
+
+local ESPRight = Tabs.ESP:AddSection({ Name = "Gun & Traps", Position = "Right" })
+
+ESPRight:AddToggle({
+    Name = "Dropped Gun ESP", Default = false, Flag = "GunDropESP",
+    Callback = function(Value)
+        gunDropESP = Value
+        if not Value then ESPContainer:RemoveGroup("gun")
+        else
+            local map = getMap()
+            if map and map:FindFirstChild("GunDrop") then
+                ESPContainer:Add(map:FindFirstChild("GunDrop"), {
+                    AccentColor = Color3.new(0.952941, 1, 0.0745098),
+                    ShowLabel = true, LabelText = "Dropped gun!",
+                    GroupName = "gun"
+                })
+            end
+        end
+    end
+})
+
+ESPRight:AddToggle({
+    Name = "Trap Detection", Default = false, Flag = "TrapESP",
+    Callback = function(Value)
+        trapDetection = Value
+        if not Value then ESPContainer:RemoveGroup("trap")
+        else
+            for _, v in ipairs(workspace:GetDescendants()) do
+                if v.Name == "Trap" and (v.Parent:IsA("Folder") or v.Parent:IsA("Model")) then
+                    v.Transparency = 0
+                    ESPContainer:Add(v, {
+                        AccentColor = Color3.new(1, 0, 0),
+                        ShowLabel = true, LabelText = "Trap",
+                        GroupName = "trap"
+                    })
+                end
+            end
+        end
+    end
+})
+
+ESPRight:AddToggle({
+    Name = "Auto Get Gun on Drop", Default = false, Flag = "AutoGetGun",
+    Callback = function(Value) autoGetDroppedGun = Value end
+})
+
+-- ============================================================
+-- TAB: Tools
+-- ============================================================
+local ShootLeft = Tabs.Tools:AddSection({ Name = "Shooting", Position = "Left" })
+
+local function doShootMurderer()
+    if findSheriff() ~= localplayer then
+        Notify("You're not sheriff/hero.", 3) return
+    end
+    local murderer = findMurderer() or findSheriffThatsNotMe()
+    if not murderer then Notify("No murderer to shoot.", 3) return end
+    if not localplayer.Character:FindFirstChild("Gun") then
+        if localplayer.Backpack:FindFirstChild("Gun") then
+            localplayer.Character.Humanoid:EquipTool(localplayer.Backpack:FindFirstChild("Gun"))
+        else Notify("You don't have the gun..?", 3) return end
+    end
+    local murdererHRP = murderer.Character:FindFirstChild("HumanoidRootPart")
+    if not murdererHRP then return end
+    local predicted = getPredictedPosition(murderer, shootOffset)
+    local args
+    if instakillshoot then
+        args = { CFrame.new(murdererHRP.Position + Vector3.new(0, 1, 0)), CFrame.new(murdererHRP.Position) }
+    else
+        args = { CFrame.new(localplayer.Character.RightHand.Position), CFrame.new(predicted) }
+    end
+    localplayer.Character:WaitForChild("Gun"):WaitForChild("Shoot"):FireServer(unpack(args))
+end
+
+ShootLeft:AddButton({
+    Name = "Shoot Murderer", Icon = "lucide:crosshair",
+    Callback = doShootMurderer
+})
+
+ShootLeft:AddToggle({
+    Name = "Auto Shoot Murderer", Default = false, Flag = "AutoShoot",
+    Callback = function(Value) autoShooting = Value end
+})
+
+ShootLeft:AddSlider({
+    Name = "Shoot Offset", Default = 2.8, Min = 0, Max = 5, Rounding = 1, Flag = "ShootOffset",
+    Callback = function(Value) shootOffset = Value end
+})
+
+ShootLeft:AddSlider({
+    Name = "Offset-to-Ping Mult", Default = 1, Min = 0, Max = 5, Rounding = 1, Flag = "OffsetPing",
+    Callback = function(Value) offsetToPingMult = Value end
+})
+
+local KnifeRight = Tabs.Tools:AddSection({ Name = "Knife (Murderer)", Position = "Right" })
+
+local function doKnifeThrow()
+    if findMurderer() ~= localplayer then Notify("You're not murderer.", 3) return end
+    if not localplayer.Character:FindFirstChild("Knife") then
+        if localplayer.Backpack:FindFirstChild("Knife") then
+            localplayer.Character.Humanoid:EquipTool(localplayer.Backpack:FindFirstChild("Knife"))
+        else Notify("You don't have the knife.", 3) return end
+    end
+    local nearest = findNearestPlayer()
+    if not nearest or not nearest.Character then return end
+    local nearestHRP = nearest.Character:FindFirstChild("HumanoidRootPart")
+    if not nearestHRP then return end
+    local args = {
+        CFrame.new(localplayer.Character.RightHand.Position),
+        CFrame.new(getPredictedPosition(nearest, shootOffset + 1)),
+    }
+    if spawnAtPlayer then
+        args[1] = CFrame.new(nearestHRP.Position + (nearestHRP.CFrame.LookVector * 5))
+    end
+    localplayer.Character:WaitForChild("Knife"):WaitForChild("Events"):WaitForChild("KnifeThrown"):FireServer(unpack(args))
+end
+
+KnifeRight:AddButton({
+    Name = "Knife Throw to Closest", Icon = "lucide:sword",
+    Callback = doKnifeThrow
+})
+
+KnifeRight:AddToggle({
+    Name = "Auto Knife Throw", Default = false, Flag = "AutoKnifeThrow",
+    Callback = function(Value) loopThrow = Value end
+})
+
+local function doKillClosest()
+    if findMurderer() ~= localplayer then Notify("You're not murderer.", 3) return end
+    if not localplayer.Character:FindFirstChild("Knife") then
+        if localplayer.Backpack:FindFirstChild("Knife") then
+            localplayer.Character.Humanoid:EquipTool(localplayer.Backpack:FindFirstChild("Knife"))
+        else Notify("You don't have the knife.", 3) return end
+    end
+    local nearest = findNearestPlayer()
+    if not nearest or not nearest.Character then Notify("No player nearby.", 3) return end
+    local hrp = nearest.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    hrp.Anchored = true
+    hrp.CFrame = localplayer.Character.HumanoidRootPart.CFrame + localplayer.Character.HumanoidRootPart.CFrame.LookVector * 2
+    task.wait(0.1)
+    localplayer.Character.Knife.Stab:FireServer("Slash")
+end
+
+KnifeRight:AddButton({
+    Name = "Kill Closest Player", Icon = "lucide:skull",
+    Callback = doKillClosest
+})
+
+local function doKillEveryone()
+    if findMurderer() ~= localplayer then Notify("You're not murderer.", 3) return end
+    if not localplayer.Character:FindFirstChild("Knife") then
+        if localplayer.Backpack:FindFirstChild("Knife") then
+            localplayer.Character.Humanoid:EquipTool(localplayer.Backpack:FindFirstChild("Knife"))
+        else Notify("You don't have the knife.", 3) return end
+    end
+    for _, player in ipairs(Players:GetPlayers()) do
+        if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player ~= localplayer then
+            player.Character.HumanoidRootPart.Anchored = true
+            player.Character.HumanoidRootPart.CFrame = localplayer.Character.HumanoidRootPart.CFrame
+                + localplayer.Character.HumanoidRootPart.CFrame.LookVector * 1
+        end
+    end
+    localplayer.Character.Knife.Stab:FireServer("Slash")
+end
+
+KnifeRight:AddButton({
+    Name = "Kill EVERYONE", Icon = "lucide:skull",
+    Callback = doKillEveryone
+})
+
+KnifeRight:AddToggle({
+    Name = "Murderer Kill Aura", Default = false, Flag = "KillAura",
+    Callback = function(Value)
+        if Value then
+            if killAuraCon then killAuraCon:Disconnect() end
+            killAuraCon = RunService.Heartbeat:Connect(function()
+                for _, player in ipairs(Players:GetPlayers()) do
+                    if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player ~= localplayer then
+                        local hrp = player.Character:FindFirstChild("HumanoidRootPart")
+                        if (hrp.Position - localplayer.Character.HumanoidRootPart.Position).Magnitude < 7 then
+                            hrp.Anchored = true
+                            hrp.CFrame = localplayer.Character.HumanoidRootPart.CFrame
+                                + localplayer.Character.HumanoidRootPart.CFrame.LookVector * 2
+                            task.wait(0.1)
+                            localplayer.Character.Knife.Stab:FireServer("Slash")
+                            return
+                        end
+                    end
+                end
+            end)
+        else
+            if killAuraCon then killAuraCon:Disconnect() killAuraCon = nil end
+        end
+    end
+})
+
+-- ============================================================
+-- TAB: Detectables
+-- ============================================================
+local DetectLeft = Tabs.Detectables:AddSection({ Name = "Risky Features", Position = "Left" })
+
+DetectLeft:AddToggle({
+    Name = "Instakill Murderer", Default = false, Flag = "InstakillShoot",
+    Callback = function(Value) instakillshoot = Value end
+})
+
+DetectLeft:AddToggle({
+    Name = "Spawn Knife Near Player", Default = false, Flag = "SpawnKnifeNear",
+    Callback = function(Value) spawnAtPlayer = Value end
+})
+
+DetectLeft:AddButton({
+    Name = "God Mode (Unstable)", Icon = "lucide:shield-check",
+    Callback = function()
+        local Cam = workspace.CurrentCamera
+        local Pos, Char = Cam.CFrame, localplayer.Character
+        local Human = Char and Char:FindFirstChildWhichIsA("Humanoid")
+        if not Human then Notify("No humanoid.", 3) return end
+        local nHuman = Human:Clone()
+        nHuman.Parent, localplayer.Character = Char, nil
+        nHuman:SetStateEnabled(15, false)
+        nHuman:SetStateEnabled(1, false)
+        nHuman:SetStateEnabled(0, false)
+        nHuman.BreakJointsOnDeath, Human = true, Human:Destroy()
+        localplayer.Character, Cam.CameraSubject, Cam.CFrame = Char, nHuman, wait() and Pos
+        nHuman.DisplayDistanceType = Enum.HumanoidDisplayDistanceType.None
+        local s = Char:FindFirstChild("Animate")
+        if s then s.Disabled = true wait() s.Disabled = false end
+        nHuman.Health = nHuman.MaxHealth
+    end
+})
+
+DetectLeft:AddButton({
+    Name = "Send Roles to Chat", Icon = "lucide:message-circle",
+    Callback = function()
+        local channels = TextChatService:WaitForChild("TextChannels"):GetChildren()
+        for _, channel in ipairs(channels) do
+            if channel.Name == "RBXSystem" then continue end
+            local murd, sher = findMurderer(), findSheriff()
+            local msg = string.format("Murderer: %s | Sheriff: %s | <<MawwwHub>>",
+                murd and murd.Name or "-", sher and sher.Name or "-")
+            channel:SendAsync(msg)
+        end
+    end
+})
+
+-- ============================================================
+-- TAB: Fun
+-- ============================================================
+local FunLeft = Tabs.Fun:AddSection({ Name = "Fun Features", Position = "Left" })
+
+FunLeft:AddButton({
+    Name = "Hold Everyone Hostage", Icon = "lucide:users",
+    Callback = function()
+        if findMurderer() ~= localplayer then Notify("You're not murderer.", 3) return end
+        for _, player in ipairs(Players:GetPlayers()) do
+            if player.Character and player.Character:FindFirstChild("HumanoidRootPart") and player ~= localplayer then
+                player.Character.HumanoidRootPart.Anchored = true
+                player.Character.HumanoidRootPart.CFrame = localplayer.Character.HumanoidRootPart.CFrame
+                    + localplayer.Character.HumanoidRootPart.CFrame.LookVector * 5
+            end
+        end
+        Notify("Everyone is hostage!", 3)
+    end
+})
+
+local TeleportRight = Tabs.Fun:AddSection({ Name = "Teleports", Position = "Right" })
+
+TeleportRight:AddButton({
+    Name = "Teleport to Lobby", Icon = "lucide:house",
+    Callback = function()
+        local lobby = workspace:FindFirstChild("Lobby")
+        if lobby then
+            localplayer.Character:MoveTo(lobby.Spawns:FindFirstChildWhichIsA("SpawnLocation").Position)
+        end
+    end
+})
+
+TeleportRight:AddButton({
+    Name = "Teleport to Map", Icon = "lucide:map",
+    Callback = function()
+        local map = getMap()
+        if map and map:FindFirstChild("Spawns") then
+            local spawns = map:FindFirstChild("Spawns"):GetChildren()
+            local rs = spawns[math.random(1, #spawns)]
+            localplayer.Character:MoveTo(rs.Position)
+        else Notify("No map.", 3) end
+    end
+})
+
+TeleportRight:AddButton({
+    Name = "Teleport to Gun", Icon = "lucide:map-pin",
+    Callback = function()
+        local map = getMap()
+        if map and map:FindFirstChild("GunDrop") then
+            local prev = localplayer.Character:GetPivot()
+            localplayer.Character:PivotTo(map:FindFirstChild("GunDrop"):GetPivot())
+            localplayer.Backpack.ChildAdded:Wait()
+            localplayer.Character:PivotTo(prev)
+        else Notify("No dropped gun.", 3) end
+    end
+})
+
+-- ============================================================
+-- TAB: Floating Buttons (Quick Access)
+-- ============================================================
+local FloatLeft = Tabs.Floating:AddSection({ Name = "Quick Access Buttons", Position = "Left" })
+
+FloatLeft:AddParagraph({
+    Name = "Animated Floating Buttons",
+    Content = "Tap any button below to spawn a floating quick-access button.\n\nDrag threshold: 5px. Locked buttons won't move."
+})
+
+FloatLeft:AddButton({
+    Name = "Spawn All Quick Buttons", Icon = "lucide:zap",
+    Callback = function()
+        -- Reset previous set
+        FloatingButtons:ClearAll()
+
+        -- Button 1: Shoot Murderer (crosshair icon, diamond shape)
+        FloatingButtons:Create({
+            Name = "ShootMurderer",
+            Icon = "lucide:crosshair",
+            Shape = "diamond",
+            Color = Color3.fromRGB(255, 80, 80),
+            Position = UDim2.new(0, 120, 0.35, 0),
+            Callback = function() doShootMurderer() end
+        })
+
+        -- Button 2: Auto Shoot (zap icon, circle, toggle)
+        FloatingButtons:Create({
+            Name = "AutoShoot",
+            Icon = "lucide:zap",
+            Shape = "circle",
+            Color = Color3.fromRGB(255, 200, 60),
+            Position = UDim2.new(0, 120, 0.5, 0),
+            Toggle = true,
+            Callback = function(state) autoShooting = state end
+        })
+
+        -- Button 3: Knife Throw (sword icon, hex shape)
+        FloatingButtons:Create({
+            Name = "KnifeThrow",
+            Icon = "lucide:sword",
+            Shape = "hex",
+            Color = Color3.fromRGB(180, 90, 255),
+            Position = UDim2.new(0, 120, 0.65, 0),
+            Callback = function() doKnifeThrow() end
+        })
+
+        -- Button 4: Kill Closest (skull icon, rounded)
+        FloatingButtons:Create({
+            Name = "KillClosest",
+            Icon = "lucide:skull",
+            Shape = "rounded",
+            Color = Color3.fromRGB(255, 50, 50),
+            Position = UDim2.new(0, 200, 0.35, 0),
+            Callback = function() doKillClosest() end
+        })
+
+        -- Button 5: Kill Everyone (skull icon, rounded)
+        FloatingButtons:Create({
+            Name = "KillEveryone",
+            Icon = "lucide:skull",
+            Shape = "rounded",
+            Color = Color3.fromRGB(200, 30, 30),
+            Position = UDim2.new(0, 200, 0.5, 0),
+            Callback = function() doKillEveryone() end
+        })
+
+        -- Button 6: Teleport Gun (map-pin, circle)
+        FloatingButtons:Create({
+            Name = "TPGun",
+            Icon = "lucide:map-pin",
+            Shape = "circle",
+            Color = Color3.fromRGB(60, 200, 255),
+            Position = UDim2.new(0, 200, 0.65, 0),
+            Callback = function()
+                local map = getMap()
+                if map and map:FindFirstChild("GunDrop") then
+                    local prev = localplayer.Character:GetPivot()
+                    localplayer.Character:PivotTo(map:FindFirstChild("GunDrop"):GetPivot())
+                    localplayer.Backpack.ChildAdded:Wait()
+                    localplayer.Character:PivotTo(prev)
+                end
+            end
+        })
+
+        -- Button 7: Anti-Fling (shield, squircle, toggle)
+        FloatingButtons:Create({
+            Name = "AntiFling",
+            Icon = "lucide:shield",
+            Shape = "squircle",
+            Color = Color3.fromRGB(80, 220, 120),
+            Position = UDim2.new(0, 280, 0.35, 0),
+            Toggle = true,
+            Callback = function(state)
+                if state then
+                    antifling_Enable()
+                    Notify("Anti-Fling ON", 2)
+                else
+                    antifling_Disable()
+                    Notify("Anti-Fling OFF", 2)
+                end
+            end
+        })
+
+        -- Button 8: Player ESP (eye, circle, toggle)
+        FloatingButtons:Create({
+            Name = "PlayerESP",
+            Icon = "lucide:eye",
+            Shape = "circle",
+            Color = Color3.fromRGB(0, 200, 255),
+            Position = UDim2.new(0, 280, 0.5, 0),
+            Toggle = true,
+            Callback = function(state)
+                playerESP = state
+                if state then
+                    if not findMurderer() or not findSheriff() then
+                        Notify("Waiting for roles...", 3)
+                        task.spawn(function()
+                            repeat task.wait(1) until findSheriff() or findMurderer()
+                            reloadESP()
+                        end)
+                    else reloadESP() end
+                else
+                    ESPContainer:RemoveGroup("players")
+                end
+            end
+        })
+
+        -- Button 9: Send Roles (message, hex)
+        FloatingButtons:Create({
+            Name = "SendRoles",
+            Icon = "lucide:message-circle",
+            Shape = "hex",
+            Color = Color3.fromRGB(140, 200, 255),
+            Position = UDim2.new(0, 280, 0.65, 0),
+            Callback = function()
+                local channels = TextChatService:WaitForChild("TextChannels"):GetChildren()
+                for _, channel in ipairs(channels) do
+                    if channel.Name == "RBXSystem" then continue end
+                    local murd, sher = findMurderer(), findSheriff()
+                    channel:SendAsync(string.format("Murderer: %s | Sheriff: %s | <<MawwwHub>>",
+                        murd and murd.Name or "-", sher and sher.Name or "-"))
+                end
+            end
+        })
+
+        -- Apply current global lock state
+        FloatingButtons:SetAllLocked(FloatingButtons.GlobalLocked)
+        Notify("Spawned " .. #FloatingButtons.Buttons .. " floating buttons!", 3)
+    end
+})
+
+FloatLeft:AddButton({
+    Name = "Remove All Buttons", Icon = "lucide:trash-2",
+    Callback = function()
+        FloatingButtons:ClearAll()
+        Notify("Floating buttons removed.", 2)
+    end
+})
+
+local FloatRight = Tabs.Floating:AddSection({ Name = "Lock & Drag Mode", Position = "Right" })
+
+FloatRight:AddToggle({
+    Name = "Lock All Floating Buttons", Default = false, Flag = "GlobalLockFloating",
+    Callback = function(Value)
+        FloatingButtons:SetAllLocked(Value)
+        Notify(Value and "Floating buttons LOCKED" or "Floating buttons UNLOCKED", 2)
+    end
+})
+
+FloatRight:AddParagraph({
+    Name = "How It Works",
+    Content = "Lock ON: Buttons are fixed in place, only tap works.\nLock OFF: Drag buttons anywhere on screen (5px threshold)."
+})
+
+-- ============================================================
+-- TAB: Misc (Anti-Fling V2 + Timer + Copy)
+-- ============================================================
+local MiscLeft = Tabs.Misc:AddSection({ Name = "Round Info", Position = "Left" })
+
+local timerLabel, timerTask
+
+MiscLeft:AddToggle({
+    Name = "Round Timer", Default = false, Flag = "RoundTimer",
+    Callback = function(Value)
+        if Value then
+            timerLabel = Instance.new("TextLabel")
+            timerLabel.Parent = CoreGui
+            timerLabel.BackgroundTransparency = 1
+            timerLabel.TextColor3 = Color3.new(1, 1, 1)
+            timerLabel.TextScaled = true
+            timerLabel.AnchorPoint = Vector2.new(0.5, 0.5)
+            timerLabel.Position = UDim2.fromScale(0.5, 0.15)
+            timerLabel.Size = UDim2.fromOffset(200, 35)
+            timerLabel.Font = Enum.Font.Montserrat
+            timerTask = task.spawn(function()
+                while task.wait(0.5) do
+                    local tp = workspace:FindFirstChild("RoundTimerPart")
+                    if tp then
+                        local t = tp:GetAttribute("Time")
+                        if t and t ~= -1 then
+                            timerLabel.Text = string.format("%dm %ds", math.floor(t/60), t%60)
+                        end
+                    end
+                end
+            end)
+        else
+            if timerLabel then timerLabel:Destroy() timerLabel = nil end
+            if timerTask then task.cancel(timerTask) timerTask = nil end
+        end
+    end
+})
+
+MiscLeft:AddButton({
+    Name = "Copy Murderer Username", Icon = "lucide:copy",
+    Callback = function()
+        local m = findMurderer()
+        if m then
+            if setclipboard then setclipboard(m.Name) end
+            Notify("Copied: " .. m.Name, 2)
+        else Notify("No murderer found.", 3) end
+    end
+})
+
+MiscLeft:AddButton({
+    Name = "Copy Sheriff Username", Icon = "lucide:copy",
+    Callback = function()
+        local s = findSheriff()
+        if s then
+            if setclipboard then setclipboard(s.Name) end
+            Notify("Copied: " .. s.Name, 2)
+        else Notify("No sheriff found.", 3) end
+    end
+})
+
+-- ============================================================
+-- ANTI-FLING V2 (CanCollide disable engine)
+-- ============================================================
+local AntiFlingRight = Tabs.Misc:AddSection({ Name = "Anti-Fling V2", Position = "Right" })
+
+local antiFling = false
+local antiFlingConnections = {}
+local antiFlingTrackedPlayers = {}
+
+function antifling_SetupCharacterCollision(character)
+    local function disableCollide(part)
+        if antiFling and part:IsA("BasePart") then
+            part.CanCollide = false
+        end
+    end
+
+    for _, part in ipairs(character:GetChildren()) do
+        disableCollide(part)
+    end
+
+    local childAddedConn = character.ChildAdded:Connect(disableCollide)
+    local steppedConn = RunService.Stepped:Connect(function()
+        if antiFling and character:IsDescendantOf(workspace) then
+            for _, part in ipairs(character:GetChildren()) do
+                if part:IsA("BasePart") and part.CanCollide then
+                    part.CanCollide = false
+                end
+            end
+        end
+    end)
+
+    character.Destroying:Connect(function()
+        childAddedConn:Disconnect()
+        steppedConn:Disconnect()
+    end)
+
+    table.insert(antiFlingConnections, childAddedConn)
+    table.insert(antiFlingConnections, steppedConn)
+end
+
+function antifling_TrackPlayer(player)
+    if player == localplayer then return end
+    if antiFlingTrackedPlayers[player] then return end
+    antiFlingTrackedPlayers[player] = true
+    local conn = player.CharacterAdded:Connect(antifling_SetupCharacterCollision)
+    if player.Character then
+        antifling_SetupCharacterCollision(player.Character)
+    end
+    table.insert(antiFlingConnections, conn)
+end
+
+function antifling_Uninstall()
+    for _, conn in ipairs(antiFlingConnections) do
+        pcall(function() conn:Disconnect() end)
+    end
+    antiFlingConnections = {}
+    antiFlingTrackedPlayers = {}
+end
+
+function antifling_Enable()
+    antiFling = true
+    for _, player in ipairs(Players:GetPlayers()) do
+        antifling_TrackPlayer(player)
+    end
+end
+
+function antifling_Disable()
+    antiFling = false
+    antifling_Uninstall()
+end
+
+Players.PlayerAdded:Connect(function(player)
+    if antiFling then antifling_TrackPlayer(player) end
+end)
+
+AntiFlingRight:AddToggle({
+    Name = "Anti-Fling", Default = false, Flag = "AntiFling",
+    Callback = function(Value)
+        if Value then
+            antifling_Enable()
+            Notify("Anti-Fling: Enabled", 3)
+        else
+            antifling_Disable()
+            Notify("Anti-Fling: Disabled", 2)
+        end
+    end
+})
+
+AntiFlingRight:AddParagraph({
+    Name = "Anti-Fling Engine V2",
+    Content = "CanCollide-disable engine. Blocks modern fling vectors.\n\nChat: ;af on / ;af off"
+})
+
+localplayer.Chatted:Connect(function(msg)
+    local lowerMsg = string.lower(msg)
+    if lowerMsg == ";af on" or lowerMsg == ";antifling on" then
+        antifling_Enable()
+        Notify("Anti-Fling: Enabled (via chat)", 3)
+    elseif lowerMsg == ";af off" or lowerMsg == ";antifling off" then
+        antifling_Disable()
+        Notify("Anti-Fling: Disabled (via chat)", 3)
+    end
+end)
+
+-- ============================================================
+-- EVENT LISTENERS
+-- ============================================================
+if ReplicatedStorage:WaitForChild("Remotes", 5) then
+    pcall(function()
+        ReplicatedStorage:WaitForChild("Remotes"):WaitForChild("Gameplay"):WaitForChild("PlayerDataChanged", 5).OnClientEvent:Connect(function(data)
+            playerData = data
+            if playerESP then reloadESP() end
+        end)
+    end)
+end
+
+workspace.ChildAdded:Connect(function(ch)
+    if ch == getMap() and playerESP then
+        task.spawn(function()
+            repeat task.wait(1) until findMurderer()
+            reloadESP()
+        end)
+    end
+end)
+
+workspace.ChildRemoved:Connect(function(ch)
+    if ch == getMap() and playerESP then
+        playerData = {}
+        ESPContainer:ClearAllGroups()
+    end
+end)
+
+workspace.DescendantAdded:Connect(function(ch)
+    if trapDetection and ch.Name == "Trap" and (ch.Parent:IsA("Folder") or ch.Parent:IsA("Model")) then
+        ch.Transparency = 0
+        ESPContainer:Add(ch, {
+            AccentColor = Color3.new(1, 0, 0),
+            ShowLabel = true, LabelText = "Trap",
+            GroupName = "trap"
+        })
+    end
+    if gunDropESP and ch.Name == "GunDrop" then
+        ESPContainer:Add(ch, {
+            AccentColor = Color3.new(0.952941, 1, 0.0745098),
+            ShowLabel = true, LabelText = "Dropped gun!",
+            GroupName = "gun"
+        })
+        if autoGetDroppedGun then
+            task.wait(1)
+            if getMap() and getMap():FindFirstChild("GunDrop") then
+                local prev = localplayer.Character:GetPivot()
+                localplayer.Character:MoveTo(getMap():FindFirstChild("GunDrop").Position)
+                localplayer.Backpack.ChildAdded:Wait()
+                localplayer.Character:PivotTo(prev)
+            end
+        end
+    end
+end)
+
+-- Auto shoot loop
+task.spawn(function()
+    while task.wait(1) do
+        if findSheriff() == localplayer and autoShooting then
+            repeat
+                task.wait(0.1)
+                local murderer = findMurderer()
+                if not murderer then continue end
+                local murdererPos = murderer.Character.HumanoidRootPart.Position
+                local charRoot = localplayer.Character.HumanoidRootPart
+                local rayDir = murdererPos - charRoot.Position
+                local params = RaycastParams.new()
+                params.FilterType = Enum.RaycastFilterType.Exclude
+                params.FilterDescendantsInstances = {localplayer.Character}
+                local hit = workspace:Raycast(charRoot.Position, rayDir, params)
+                if not hit or hit.Instance.Parent == murderer.Character then
+                    if not localplayer.Character:FindFirstChild("Gun") then
+                        if localplayer.Backpack:FindFirstChild("Gun") then
+                            localplayer.Character.Humanoid:EquipTool(localplayer.Backpack:FindFirstChild("Gun"))
+                        else break end
+                    end
+                    local murdererHRP = murderer.Character:FindFirstChild("HumanoidRootPart")
+                    if not murdererHRP then break end
+                    local predicted = getPredictedPosition(murderer, shootOffset)
+                    local args = {[1] = 1, [2] = predicted, [3] = "AH2"}
+                    localplayer.Character.Gun.KnifeLocal.CreateBeam.RemoteFunction:InvokeServer(unpack(args))
+                end
+            until findSheriff() ~= localplayer or not autoShooting
+        end
+    end
+end)
+
+-- Auto knife loop
+task.spawn(function()
+    while task.wait(1.5) do
+        if loopThrow then
+            pcall(function()
+                if findMurderer() == localplayer then
+                    local nearest = findNearestPlayer()
+                    if nearest and nearest.Character then
+                        local args = {
+                            CFrame.new(localplayer.Character.RightHand.Position),
+                            CFrame.new(getPredictedPosition(nearest, shootOffset + 1)),
+                        }
+                        localplayer.Character:WaitForChild("Knife"):WaitForChild("Events"):WaitForChild("KnifeThrown"):FireServer(unpack(args))
+                    end
+                end
+            end)
+        end
+    end
+end)
+
+-- ============================================================
+-- CLEANUP
+-- ============================================================
+Window:OnDestroy(function()
+    ESPContainer:ClearAllGroups()
+    if killAuraCon then killAuraCon:Disconnect() end
+    if timerLabel then timerLabel:Destroy() end
+    if timerTask then task.cancel(timerTask) end
+    antifling_Disable()
+    FloatingButtons:ClearAll()
+end)
+
+Notify("MawwwHub MM2 loaded! Spawn quick buttons in the Floating tab.", 5)
